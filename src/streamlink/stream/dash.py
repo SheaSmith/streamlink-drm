@@ -11,7 +11,7 @@ from urllib.parse import urlparse, urlunparse
 from streamlink.exceptions import PluginError, StreamError
 from streamlink.session import Streamlink
 from streamlink.stream.dash_manifest import MPD, Representation, Segment, freeze_timeline
-from streamlink.stream.ffmpegmux import FFMPEGMuxer
+from streamlink.stream.ffmpegmux import FFMPEGMuxer, MuxedStream
 from streamlink.stream.segmented import SegmentedStreamReader, SegmentedStreamWorker, SegmentedStreamWriter
 from streamlink.stream.stream import Stream
 from streamlink.utils.l10n import Language
@@ -196,7 +196,8 @@ class DASHStream(Stream):
         session: Streamlink,
         mpd: MPD,
         video_representation: Optional[Representation] = None,
-        audio_representation: Optional[Representation] = None,
+        audio_representations: Optional[List[Representation]] = None,
+        subtitles_representation: Optional[Representation] = None,
         **args,
     ):
         """
@@ -210,7 +211,8 @@ class DASHStream(Stream):
         super().__init__(session)
         self.mpd = mpd
         self.video_representation = video_representation
-        self.audio_representation = audio_representation
+        self.audio_representations = audio_representations
+        self.subtitles_representation = subtitles_representation
         self.args = session.http.valid_request_args(**args)
 
     def __json__(self):
@@ -289,18 +291,22 @@ class DASHStream(Stream):
         source = mpd_params.get("url", "MPD manifest")
         video: List[Optional[Representation]] = [None] if with_audio_only else []
         audio: List[Optional[Representation]] = [None] if with_video_only else []
+        subtitles: List[Optional[Representation]] = []
 
         # Search for suitable video and audio representations
         for aset in mpd.periods[period].adaptationSets:
             if aset.contentProtections:
                 log.debug(f"{source} is protected by DRM")
             for rep in aset.representations:
+                print(rep.mimeType)
                 if rep.contentProtections:
                     log.debug(f"{source} is protected by DRM")
                 if rep.mimeType.startswith("video"):
                     video.append(rep)
                 elif rep.mimeType.startswith("audio"):  # pragma: no branch
                     audio.append(rep)
+                elif rep.mimeType.startswith("application"):
+                    subtitles.append(rep)
 
         if not video:
             video.append(None)
@@ -329,21 +335,21 @@ class DASHStream(Stream):
         )
 
         # if the language is given by the stream, filter out other languages that do not match
-        if len(available_languages) > 1:
-            audio = [a for a in audio if a and (a.lang is None or a.lang == lang)]
+        # if len(available_languages) > 1:
+        #     audio = [a for a in audio if a and (a.lang is None or a.lang == lang)]
 
         ret = []
         for vid, aud in itertools.product(video, audio):
             if not vid and not aud:
                 continue
 
-            stream = DASHStream(session, mpd, vid, aud, **args)
+            stream = DASHStream(session, mpd, vid, audio, subtitles[0], **args)
             stream_name = []
 
             if vid:
                 stream_name.append(f"{vid.height or vid.bandwidth_rounded:0.0f}{'p' if vid.height else 'k'}")
-            if aud and len(audio) > 1:
-                stream_name.append(f"a{aud.bandwidth:0.0f}k")
+            # if aud and len(audio) > 1:
+                # stream_name.append(f"a{aud.bandwidth:0.0f}k")
             ret.append(("+".join(stream_name), stream))
 
         # rename duplicate streams
@@ -354,8 +360,8 @@ class DASHStream(Stream):
         def sortby_bandwidth(dash_stream: DASHStream) -> float:
             if dash_stream.video_representation:
                 return dash_stream.video_representation.bandwidth
-            if dash_stream.audio_representation:
-                return dash_stream.audio_representation.bandwidth
+            # if dash_stream.audio_representation:
+            #     return dash_stream.audio_representation.bandwidth
             return 0  # pragma: no cover
 
         ret_new = {}
@@ -376,24 +382,43 @@ class DASHStream(Stream):
         return ret_new
 
     def open(self):
-        video, audio = None, None
-        rep_video, rep_audio = self.video_representation, self.audio_representation
+        video, subtitles = None, None
+        audios = []
+        rep_video, rep_audios, rep_subtitles = self.video_representation, self.audio_representations, self.subtitles_representation
 
         timestamp = now()
 
+        fds = []
+
+        maps = ["0:v?", "0:a?"]
+        metadata = {}
         if rep_video:
             video = DASHStreamReader(self, rep_video, timestamp)
             log.debug(f"Opening DASH reader for: {rep_video.ident!r} - {rep_video.mimeType}")
             video.open()
+            fds.append(video)
 
-        if rep_audio:
-            audio = DASHStreamReader(self, rep_audio, timestamp)
-            log.debug(f"Opening DASH reader for: {rep_audio.ident!r} - {rep_audio.mimeType}")
-            audio.open()
+        if rep_audios:
+            for i, rep_audio in enumerate(rep_audios):
+                audio = DASHStreamReader(self, rep_audio, timestamp)
+                log.debug(f"Opening DASH reader for: {rep_audio.ident!r} - {rep_audio.mimeType}")
+                # audio.open()
+                audio.open()
+                fds.append(audio)
+                metadata["s:a:{0}".format(i)] = ["language={0}".format(rep_audio.lang), "title=\"{0}\"".format(rep_audio.label.text)]
 
-        if video and audio:
-            return FFMPEGMuxer(self.session, video, audio, copyts=True).open()
-        elif video:
-            return video
-        elif audio:
-            return audio
+        maps.extend(f"{i}:a" for i in range(1, len(rep_audios) + 1))
+
+        # if rep_subtitles:
+        #     subtitles = DASHStreamReader(self, rep_subtitles, timestamp)
+        #     log.debug(f"Opening DASH reader for: {rep_subtitles.ident!r} - {rep_subtitles.mimeType}")
+        #     subtitles.open()
+
+        # if video and audios:
+            # audios.append(video)
+            # return MuxedStream(self.session, video, audios)
+        return FFMPEGMuxer(self.session, *fds, copyts=True, maps=maps, metadata=metadata).open()
+        # elif video:
+        #     return video
+        # elif audio:
+        #     return audio
