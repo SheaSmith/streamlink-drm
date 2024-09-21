@@ -487,6 +487,8 @@ class Period(MPDNode):
         self.eventStream = self.children(EventStream)
         self.subset = self.children(Subset)
 
+class Label(MPDNode):
+    __tag__ = "Label"
 
 class AssetIdentifier(MPDNode):
     __tag__ = "AssetIdentifier"
@@ -597,6 +599,7 @@ class AdaptationSet(_RepresentationBaseType):
         self.segmentList = self.only_child(SegmentList, period=self.parent)
         self.segmentTemplate = self.only_child(SegmentTemplate, period=self.parent)
         self.representations = self.children(Representation, minimum=1, period=self.parent)
+        self.label = self.only_child(Label, period=self.parent)
 
 
 class Representation(_RepresentationBaseType):
@@ -630,6 +633,10 @@ class Representation(_RepresentationBaseType):
     @property
     def lang(self):
         return self.parent.lang
+
+    @property
+    def label(self):
+        return self.parent.label
 
     @property
     def bandwidth_rounded(self) -> float:
