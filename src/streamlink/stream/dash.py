@@ -343,7 +343,7 @@ class DASHStream(Stream):
             if not vid and not aud:
                 continue
 
-            stream = DASHStream(session, mpd, vid, audio, subtitles[0], **args)
+            stream = DASHStream(session, mpd, vid, audio, **args)
             stream_name = []
 
             if vid:
@@ -405,7 +405,7 @@ class DASHStream(Stream):
                 # audio.open()
                 audio.open()
                 fds.append(audio)
-                metadata["s:a:{0}".format(i)] = ["language={0}".format(rep_audio.lang), "title=\"{0}\"".format(rep_audio.label.text)]
+                metadata["s:a:{0}".format(i)] = ["language={0}".format(rep_audio.label.text), "title=\"{0}\"".format(rep_audio.label.text)]
 
         maps.extend(f"{i}:a" for i in range(1, len(rep_audios) + 1))
 
